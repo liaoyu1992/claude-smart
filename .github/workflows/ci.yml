@@ -57,4 +57,9 @@ jobs:
           "
 
       - name: Check hook config valid JSON
-        run: python -c "import json; json.load(open('.claude/settings.local.json')); print('settings OK')"
+        run: |
+          if [ -f .claude/settings.local.json ]; then
+            python -c "import json; json.load(open('.claude/settings.local.json')); print('settings OK')"
+          else
+            echo "⚠️ settings.local.json not tracked (local-only config), skipping"
+          fi
