@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint & verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install qdrant-client numpy requests pyyaml
+
+      - name: Syntax check all Python files
+        run: |
+          python -m py_compile .claude/bin/observe.py
+          python -m py_compile .claude/bin/observations_rotate.py
+          python -m py_compile .claude/bin/auto-analyze-instincts.py
+          python -m py_compile .claude/bin/auto-evolve.py
+          python -m py_compile .claude/bin/extract_memory.py
+          python -m py_compile .claude/memory/embed.py
+          python -m py_compile .claude/memory/vector_store.py
+          python -m py_compile .claude/memory/inject_memory_context.py
+
+      - name: Check YAML frontmatter
+        run: |
+          python -c "
+          import yaml, glob, sys
+          errors = []
+          for f in glob.glob('.claude/homunculus/instincts/team/*.md'):
+              text = open(f).read()
+              parts = text.split('---', 2)
+              if len(parts) < 3:
+                  errors.append(f'{f}: missing frontmatter')
+              else:
+                  try:
+                      yaml.safe_load(parts[1])
+                  except Exception as e:
+                      errors.append(f'{f}: {e}')
+          if errors:
+              print('\n'.join(errors))
+              sys.exit(1)
+          print('All team instincts OK')
+          "
+
+      - name: Check hook config valid JSON
+        run: python -c "import json; json.load(open('.claude/settings.local.json')); print('settings OK')"

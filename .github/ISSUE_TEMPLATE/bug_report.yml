@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a defect in the self-evolution system
+labels: [bug]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - observe (观测记录)
+        - auto-analyze (模式分析)
+        - auto-evolve (进化聚合)
+        - extract_memory (知识提取)
+        - inject_memory (记忆注入)
+        - vector_store (向量存储)
+        - hook configuration
+        - other / unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: What did you do when the bug occurred?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error logs from `analysis.log`, `observe_errors.log`, etc.
+      render: shell
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        Python:
+        OS:
+        Ollama installed: yes/no

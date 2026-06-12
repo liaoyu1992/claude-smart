@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a new feature or behavior change
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - observe (观测记录)
+        - auto-analyze (模式分析)
+        - auto-evolve (进化聚合)
+        - extract_memory (知识提取)
+        - inject_memory (记忆注入)
+        - vector_store (向量存储)
+        - team instincts (团队协作)
+        - new component
+        - tooling / CI
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
