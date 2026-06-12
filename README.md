@@ -625,3 +625,4 @@ source: team-consensus
 | AI 分析 | Claude CLI (Haiku) | 低成本语义分析，60s 超时 |
 | 文本检索 | BM25 (k1=1.5, b=0.75) | Ollama 不可用时的检索降级方案 |
 
+
