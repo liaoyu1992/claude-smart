@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 个人运行时数据（不共享）
+.claude/data/observations/observations.jsonl
+.claude/data/observations/*.log
+.claude/data/observations/.current_session
+.claude/data/qdrant/
+
+# 个人 instincts（仅本地，不共享）
+.claude/homunculus/instincts/personal/
+
+# 自动生成的规则（每次会话结束覆盖重写，不追踪）
+.claude/rules/auto-evolved.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment
+.env
+.venv/
+venv/
