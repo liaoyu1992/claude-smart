@@ -83,12 +83,20 @@
 │   │   ├── aggregate_by_domain()      按域分组
 │   │   └── write_evolved_rules()      写入 auto-evolved.md
 │   │
-│   └── extract_memory.py              ◀── 知识记忆提取 (319行) ★ 核心
+│   ├── extract_memory.py             ◀── 知识记忆提取 (319行) ★ 核心
 │       ├── summarize_session()            生成会话摘要
 │       ├── build_extraction_prompt()      构造提取 Prompt
 │       ├── run_extraction()               调用 Claude Haiku
 │       ├── extract_project_context()      统计提取项目上下文
 │       └── write_memory_file()            写入 memory/raw/*.md
+│       │
+│   ├── promote-to-team.py            ◀── 团队提炼候选生成 (293行)
+│       ├── filter_candidates()            筛选 confidence≥0.7 & observed≥3
+│       ├── best_team_match()              与 team/ 现有规则比对 (Jaccard)
+│       └── write_candidates_file()        写入 promote-candidates.md (gitignore)
+│       │
+│   └── adopt-instinct.py             ◀── 个人→团队规则采纳器 (162行)
+│       └── render_team_rule()             去个性化 + 写入 team/*.md
 │
 ├── memory/
 │   ├── embed.py                       ◀── 向量嵌入 (95行)
@@ -457,7 +465,7 @@ python3 -c "import qdrant_client, numpy; print('Dependencies OK')"
 | `PreToolUse(Bash)` | Bash 命令执行前 | 记录执行意图 |
 | `PostToolUse(.*)` | 所有工具调用后 | 记录工具调用详情 |
 | `SessionStart` | 会话启动时 | 向量检索 Top-5 记忆注入 |
-| `Stop` | 会话结束时 | 分析观测 → 提炼 Instinct → 聚合规则 |
+| `Stop` | 会话结束时 | 分析观测 → 提炼 Instinct → 聚合规则 → 生成团队提炼候选 |
 
 ---
 
@@ -509,12 +517,15 @@ metadata:
 ### 设计思路
 
 ```text
-个人使用积累                    提炼迁移                     团队共享
-┌─────────────────┐       ┌──────────────┐       ┌─────────────────┐
-│ personal/*.md   │ ────▶ │ 人工审查筛选  │ ────▶ │ team/*.md       │
-│ (gitignore)     │       │ confidence≥0.7│       │ (Git 追踪)      │
-│ 自动生成        │       │ 去重合并      │       │ PR 评审入库     │
-└─────────────────┘       └──────────────┘       └─────────────────┘
+个人使用积累              自动提炼 + 人工把关                团队共享
+┌───────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│ personal/*.md │     │ promote-to-team.py   │     │ team/*.md       │
+│ (gitignore)   │ ──▶ │  自动: 筛选≥0.7+去重  │ ──▶ │ (Git 追踪)      │
+│ 自动生成      │     │  自动: 与 team/ 比对  │     │ PR 评审入库     │
+└───────────────┘     │ adopt-instinct.py    │     └─────────────────┘
+   promote-candidates │  自动: 生成 team 草稿 │
+   .md (gitignore)    │  人工: 价值/隐私/合并 │ ← 仅候选+草稿；入库前由人工把关
+                      └──────────────────────┘
 ```
 
 **核心原则：** 个人原始数据留在本地，只把高价值、通用的经验推到 Git 共享。
@@ -525,10 +536,43 @@ metadata:
 |------|---------|------|
 | `instincts/team/*.md` | ✅ **追踪** | 团队共享规则，通过 PR 评审后入库 |
 | `instincts/personal/*.md` | 🔒 **gitignore** | 个人自动生成的规则，仅本地 |
+| `instincts/promote-candidates.md` | 🔒 **gitignore** | 自动生成的提炼候选清单，每次会话覆盖 |
 | `rules/auto-evolved.md` | 🔒 **gitignore** | 每次会话结束自动覆盖，不追踪 |
 | `data/` | 🔒 **gitignore** | 运行时数据（观测日志、向量库） |
 
 ### 如何提炼团队经验
+
+#### ✅ 推荐：自动候选清单 + 一键采纳
+
+系统自动从 `personal/` 筛选高置信度（≥0.7）、经多次验证（≥3 次）的规则，生成团队提炼候选清单。这是推荐主路径——把「扫描全部个人规则 + 改写格式」的体力活自动化，只把「通用价值判断 + 隐私把关 + 去重合并」留给人工。
+
+```bash
+# 1. 查看候选清单（Stop hook 每次会话结束自动刷新，也可手动触发）
+python3 .claude/bin/promote-to-team.py .claude
+cat .claude/homunculus/instincts/promote-candidates.md
+
+# 2. 候选清单分两类：
+#    🆕 新候选 —— 团队库中尚无相似规则，每条附可直接采纳的 team 草稿
+#    ⚠️ 可能重复 —— 与 team/ 已有规则相似，建议先检查能否合并
+
+# 3. 看中某条后，一键采纳（自动去个性化、改写为 team 格式）
+python3 .claude/bin/adopt-instinct.py .claude <id>
+#    例: python3 .claude/bin/adopt-instinct.py .claude secrets-before-commit
+
+# 4. 编辑生成的 team/<id>.md 补充 Why / Example，然后提交 PR
+git add .claude/homunculus/instincts/team/
+git commit -m "docs(team): promote <id> from personal"
+```
+
+**闭环自洽：** 采纳后重新运行 `promote-to-team.py`，该规则会从候选清单消失（已被识别为团队库中的相似项）。
+
+**可调阈值**（候选偏多/偏少时）：
+
+```bash
+python3 .claude/bin/promote-to-team.py .claude --confidence 0.8 --min-observed 5
+```
+
+> **设计取舍：** 自动化只产出**候选**和**草稿**，绝不自动改 Git 追踪的 `team/`——通用价值判断、隐私过滤、去重合并这三个人工才能稳妥完成的判断仍由人工把关。下面的手动方式适用于候选清单未覆盖、或想直接编写团队规则的情况。
 
 #### 方式一：从个人规则迁移（推荐）
 
