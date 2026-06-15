@@ -16,6 +16,9 @@ build/
 # 个人 instincts（仅本地，不共享）
 .claude/homunculus/instincts/personal/
 
+# 自动生成的团队提炼候选清单（每次会话结束覆盖重写，不追踪）
+.claude/homunculus/instincts/promote-candidates.md
+
 # 自动生成的规则（每次会话结束覆盖重写，不追踪）
 .claude/rules/auto-evolved.md
 
