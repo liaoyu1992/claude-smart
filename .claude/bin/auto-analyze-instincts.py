@@ -4,7 +4,7 @@ auto-analyze-instincts.py - Dual-Path Instinct Analysis Engine
 
 Runs at session end (Stop Hook). Analyzes observation data through two paths:
   - Path A: Statistical pattern detection (5 hardcoded detectors)
-  - Path B: AI semantic analysis (via Claude CLI with Haiku)
+  - Path B: AI semantic analysis (direct gateway call via Anthropic Messages API)
 
 Generates/updates Instinct files in .claude/homunculus/instincts/personal/
 
@@ -14,19 +14,18 @@ Usage: python3 auto-analyze-instincts.py <claude_dir>
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import hashlib
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------- Configuration ----------
 
-# Resolve the full path: on Windows `claude` is a .CMD shim that a bare
-# subprocess.run(["claude", ...]) cannot launch (FileNotFoundError). shutil.which
-# returns the absolute path (e.g. C:\...\claude.CMD) which subprocess CAN run.
-CLAUDE_CLI = shutil.which("claude") or "claude"
+# Model id sent to the gateway. The configured gateway maps Anthropic model
+# ids onto its own backend (e.g. claude-haiku-* -> glm-4.5-air), so the haiku
+# id is accepted as-is and no separate GLM id is needed.
 ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
 MAX_OBS_FOR_AI = 200  # Limit observations sent to AI for cost control
 
@@ -311,55 +310,131 @@ Observation Log:
 Output ONLY the JSON array, no other text."""
 
 
+def _call_messages_api(prompt: str) -> str:
+    """Call the configured Anthropic-compatible gateway directly over HTTPS.
+
+    We deliberately avoid shelling out to the `claude` CLI here. The Stop hook
+    runs while a live `claude` session is still holding Claude Code's shared
+    state (~/.claude.json, session files), and a nested `claude -p` subprocess
+    deadlocks in that situation — verified: it never returns regardless of
+    flags, MCP config, model, or working directory, even though the gateway
+    itself answers in <1s. POSTing /v1/messages directly sidesteps the nested
+    CLI entirely and is the only reliable path from inside a hook.
+    """
+    base_url = os.environ.get(
+        "ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+    ).rstrip("/")
+    token = (
+        os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+    )
+    if not token:
+        raise RuntimeError(
+            "no ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY in env; "
+            "AI semantic analysis unavailable"
+        )
+
+    payload = json.dumps({
+        "model": ANALYSIS_MODEL,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{base_url}/v1/messages",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "Authorization": f"Bearer {token}",
+            # Some gateways key on x-api-key instead of the Bearer header;
+            # send both so we work against either convention.
+            "x-api-key": token,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        body = json.loads(resp.read().decode("utf-8", errors="replace"))
+
+    # Anthropic Messages shape: content is a list of blocks; concatenate text.
+    texts = [
+        block.get("text", "")
+        for block in body.get("content", [])
+        if block.get("type") == "text"
+    ]
+    return "\n".join(t for t in texts if t)
+
+
+def _parse_ai_instincts(output: str) -> list[dict]:
+    """Parse the model's JSON-array output into instinct dicts.
+
+    Tolerates markdown code fences, leading/trailing explanatory prose, and a
+    single object (wrapped into a one-element list). The gateway maps us onto a
+    small model whose instruction-following on "output ONLY JSON" is imperfect,
+    so we try several candidate slices before giving up.
+    """
+    cleaned = re.sub(r'```(?:json)?\s*', '', output)
+    cleaned = re.sub(r'```\s*', '', cleaned).strip()
+
+    candidates = [cleaned]
+    # Whole-array slices: first '[' ... last ']'
+    first_bracket = cleaned.find('[')
+    last_bracket = cleaned.rfind(']')
+    if first_bracket >= 0 and last_bracket > first_bracket:
+        candidates.append(cleaned[first_bracket:last_bracket + 1])
+    # Single-object fallback: first '{' ... last '}'
+    first_brace = cleaned.find('{')
+    last_brace = cleaned.rfind('}')
+    if first_brace >= 0 and last_brace > first_brace:
+        candidates.append(cleaned[first_brace:last_brace + 1])
+
+    seen = set()
+    for text in candidates:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            data = [data]
+        if isinstance(data, list):
+            instincts = [
+                inst for inst in data
+                if isinstance(inst, dict) and inst.get("id") and inst.get("trigger")
+            ]
+            for inst in instincts:
+                inst.setdefault("confidence_delta", 0.05)
+                seen.add(inst["id"])
+            if instincts:
+                return instincts
+    return []
+
+
 def run_ai_analysis(session_obs: list[dict]) -> list[dict]:
-    """Run AI semantic analysis via Claude CLI."""
+    """Run AI semantic analysis via a direct gateway call (no nested CLI)."""
     if not session_obs:
         return []
 
     prompt = build_ai_prompt(session_obs)
 
     try:
-        result = subprocess.run(
-            [CLAUDE_CLI, "--print", "--model", ANALYSIS_MODEL, "-p", prompt],
-            capture_output=True, timeout=60,
-            # claude emits UTF-8; on Windows text=True would decode as the locale
-            # codec (GBK) and crash on non-ASCII output. Decode as UTF-8 explicitly.
-            encoding="utf-8", errors="replace",
-            # EOF on stdin so claude doesn't block ~3s waiting for hook JSON
-            stdin=subprocess.DEVNULL,
-        )
-        output = result.stdout.strip()
-
-        # Strip markdown code fences first
-        cleaned = re.sub(r'```(?:json)?\s*', '', output)
-        cleaned = re.sub(r'```\s*', '', cleaned).strip()
-
-        # Try direct JSON parse first
+        output = _call_messages_api(prompt)
+        return _parse_ai_instincts(output)
+    except Exception as e:
+        # Surface the failure instead of silently returning []. The previous
+        # implementation ate every error, which is why "0 AI instincts" was
+        # invisible: the nested CLI was deadlocking, not producing nothing.
         try:
-            instincts = json.loads(cleaned)
-            if isinstance(instincts, list):
-                for inst in instincts:
-                    inst.setdefault("confidence_delta", 0.05)
-                return instincts
-        except json.JSONDecodeError:
+            err_log = (
+                Path(__file__).resolve().parents[1]
+                / "data" / "observations" / "ai-analysis-errors.log"
+            )
+            err_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(err_log, "a", encoding="utf-8") as f:
+                ts = datetime.now(timezone.utc).isoformat()
+                f.write(f"{ts} AI analysis failed: {type(e).__name__}: {e}\n")
+        except Exception:
             pass
-
-        # Fallback: find the last top-level JSON array (non-greedy from end)
-        # Match from last '[' to last ']' to avoid grabbing explanatory text
-        last_bracket = cleaned.rfind('[')
-        if last_bracket >= 0:
-            try:
-                instincts = json.loads(cleaned[last_bracket:])
-                if isinstance(instincts, list):
-                    for inst in instincts:
-                        inst.setdefault("confidence_delta", 0.05)
-                    return instincts
-            except json.JSONDecodeError:
-                pass
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
-        pass
-
-    return []
+        return []
 
 
 # ---------- Instinct File Management ----------
