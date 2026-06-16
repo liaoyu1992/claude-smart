@@ -32,7 +32,7 @@ def needs_rotation(obs_file: Path) -> bool:
     if obs_file.stat().st_size > MAX_SIZE_BYTES:
         return True
     line_count = 0
-    with open(obs_file, "r", encoding="utf-8") as f:
+    with open(obs_file, "r", encoding="utf-8", errors="replace") as f:
         for _ in f:
             line_count += 1
             if line_count > MAX_LINES:
@@ -47,7 +47,7 @@ def archive_old_data(obs_dir: Path, obs_file: Path):
     recent_lines = []
     monthly_buckets = {}
 
-    with open(obs_file, "r", encoding="utf-8") as f:
+    with open(obs_file, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -71,7 +71,7 @@ def archive_old_data(obs_dir: Path, obs_file: Path):
         archive_file = obs_dir / f"observations-{month_key}.jsonl"
         existing = []
         if archive_file.exists():
-            with open(archive_file, "r", encoding="utf-8") as f:
+            with open(archive_file, "r", encoding="utf-8", errors="replace") as f:
                 existing = f.readlines()
 
         with open(archive_file, "w", encoding="utf-8") as f:
