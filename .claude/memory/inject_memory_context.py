@@ -38,9 +38,11 @@ PROJECT_REFERENCE_SLOTS = 6
 
 # --- Memory TTL by type (days) ---
 # Article Image 8 spec: user/feedback 永久, project 60天, reference 90天
+# Pitfalls are permanent because they represent hard-earned knowledge.
 MEMORY_TTL = {
-    "user": None,       # 永久 (permanent)
-    "feedback": None,   # 永久 (permanent)
+    "user": None,       # 永久
+    "feedback": None,   # 永久
+    "pitfall": None,    # 永久 (pitfalls are long-term knowledge)
     "project": 60,
     "reference": 90,
 }
@@ -297,12 +299,12 @@ def sync_embeddings(memory_dir: Path, memories: list[dict], store: MemoryVectorS
 def select_top_k(memories: list[dict]) -> list[dict]:
     """Select memories for injection by type priority + relevance score.
 
-    user/feedback are always kept (rare and high-value); project/reference are
+    user/feedback/pitfall are always kept (rare and high-value); project/reference are
     ranked by score and capped. Returns at most INJECT_BUDGET entries, ordered
     by type priority then score, so format_injected_memory renders the most
     relevant memories first.
     """
-    type_order = ["user", "feedback", "project", "reference"]
+    type_order = ["user", "feedback", "pitfall", "project", "reference"]
     buckets: dict[str, list[dict]] = {t: [] for t in type_order}
     for mem in memories:
         mem_type = mem.get("_type") or mem.get("type", "project")
@@ -314,6 +316,7 @@ def select_top_k(memories: list[dict]) -> list[dict]:
     kept: list[dict] = []
     kept.extend(buckets["user"])
     kept.extend(buckets["feedback"])
+    kept.extend(buckets["pitfall"][:3])  # Keep up to 3 pitfalls (high-value, limited)
     kept.extend(buckets["project"][:PROJECT_REFERENCE_SLOTS])
     kept.extend(buckets["reference"][:PROJECT_REFERENCE_SLOTS])
 
@@ -340,10 +343,11 @@ def format_injected_memory(memories: list[dict]) -> str:
     ]
 
     # Group by type (priority order)
-    type_order = ["user", "feedback", "project", "reference"]
+    type_order = ["user", "feedback", "pitfall", "project", "reference"]
     type_labels = {
         "user": "👤 用户偏好",
         "feedback": "💡 行为反馈",
+        "pitfall": "⚠️ 业务防坑",
         "project": "📂 项目知识",
         "reference": "🔗 参考资源",
     }
@@ -386,15 +390,16 @@ def prune_to_lines(content: str, max_lines: int = MAX_INJECTED_LINES) -> str:
         return content
 
     # Remove sections starting from lowest priority
-    priority_order = ["reference", "project", "feedback", "user"]
+    priority_order = ["reference", "project", "pitfall", "feedback", "user"]
 
     for remove_type in priority_order:
         if len(lines) <= max_lines:
             break
         header = f"## "
-        type_labels = {"reference": "参考资源", "project": "项目知识", "feedback": "行为反馈", "user": "用户偏好"}
+        type_labels = {"reference": "参考资源", "project": "项目知识", "pitfall": "业务防坑", "feedback": "行为反馈", "user": "用户偏好"}
         target_header = f"## 🔗 {type_labels[remove_type]}" if remove_type == "reference" else \
                         f"## 📂 {type_labels[remove_type]}" if remove_type == "project" else \
+                        f"## ⚠️ {type_labels[remove_type]}" if remove_type == "pitfall" else \
                         f"## 💡 {type_labels[remove_type]}" if remove_type == "feedback" else \
                         f"## 👤 {type_labels[remove_type]}"
 
