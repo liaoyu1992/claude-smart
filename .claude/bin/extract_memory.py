@@ -136,17 +136,24 @@ def build_extraction_prompt(obs_text: str) -> str:
     """Build the prompt for Claude to extract knowledge memories."""
     return f"""You are analyzing a developer's Claude Code session to extract **knowledge memories** — factual information worth remembering for future sessions.
 
-Focus on extracting:
+Focus on extracting these types of knowledge:
 1. **Bug solutions**: errors encountered and how they were fixed
 2. **Technical decisions**: architecture choices, library selections, design patterns applied
 3. **Project context**: directory structure, config files, tech stack details
 4. **Workflow knowledge**: useful commands, build steps, test procedures discovered
+5. **Pitfalls / Anti-patterns**: approaches that FAILED and why — look for "tried X → failed → did Y" sequences
 
 For each memory found, output a JSON object with:
 - "name": short-kebab-case slug (unique identifier)
 - "description": one-line summary of this knowledge
-- "type": one of ["project", "reference"] (NOT "user" or "feedback" — those are manually curated)
+- "type": one of ["project", "reference", "pitfall"] (NOT "user" or "feedback" — those are manually curated)
 - "body": the knowledge content in Markdown, 2-5 sentences
+
+For "pitfall" type memories, structure the body as:
+- **触发条件**: what scenario triggers this pitfall
+- **错误现象**: what goes wrong (error message, symptom)
+- **为什么**: root cause explanation
+- **正确做法**: what to do instead
 
 If the session has no extractable knowledge, return [].
 
@@ -154,6 +161,7 @@ IMPORTANT:
 - Only extract genuinely new/valuable knowledge, not trivial operations
 - Do NOT duplicate information that would already be in CLAUDE.md or project docs
 - Each memory should be atomic and self-contained
+- For pitfalls: focus on patterns that would bite someone again (not one-off typos)
 
 Observation Log:
 {obs_text}
