@@ -23,16 +23,36 @@ from pathlib import Path
 
 # ---------- Configuration ----------
 
-# Model id sent to the gateway. Overridable via CLAUDE_SMART_ANALYSIS_MODEL so
-# the analysis model can be swapped without a code edit. The configured gateway
-# maps Anthropic model ids onto its own backend (e.g. claude-haiku-* ->
-# glm-4.5-air), so any Anthropic-format id works; prefer those over native
-# backend names. A malformed/unknown id is rejected by the gateway (HTTP 4xx)
-# and degrades gracefully — see ai-analysis-errors.log.
-ANALYSIS_MODEL = os.environ.get(
-    "CLAUDE_SMART_ANALYSIS_MODEL", "claude-haiku-4-5-20251001"
-)
 MAX_OBS_FOR_AI = 200  # Limit observations sent to AI for cost control
+
+# Last-resort model id. The configured gateway reliably accepts Anthropic-format
+# ids (it maps them onto its own backend), so this always works. Used when no
+# session-model signal is present and as the retry fallback in run_ai_analysis.
+FALLBACK_MODEL = "claude-haiku-4-5-20251001"
+
+
+def resolve_analysis_model() -> str:
+    """Pick the model id for AI semantic analysis, preferring the session's model.
+
+    Resolution order:
+      1. CLAUDE_SMART_ANALYSIS_MODEL env — explicit override, always wins.
+      2. The session's opus-tier model from ANTHROPIC_DEFAULT_OPUS_MODEL, with
+         Claude Code variant markers ([1m], etc.) stripped — e.g.
+         "glm-5.2[1m]" -> "glm-5.2". This makes the analyzer follow whatever
+         capable model the main session runs on, instead of a fixed cheap tier.
+      3. FALLBACK_MODEL when neither is set.
+
+    Native backend names can be intermittently overloaded (HTTP 529) or rejected
+    if a marker slips through; run_ai_analysis retries and falls back to
+    FALLBACK_MODEL on a hard 4xx, so an imperfect resolution degrades, not breaks.
+    """
+    explicit = os.environ.get("CLAUDE_SMART_ANALYSIS_MODEL", "").strip()
+    if explicit:
+        return explicit
+    opus = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "").strip()
+    if opus:
+        return re.sub(r"\[[^\]]*\]", "", opus)
+    return FALLBACK_MODEL
 
 
 # ---------- Path Helpers ----------
@@ -315,7 +335,7 @@ Observation Log:
 Output ONLY the JSON array, no other text."""
 
 
-def _call_messages_api(prompt: str) -> str:
+def _call_messages_api(prompt: str, model: str) -> str:
     """Call the configured Anthropic-compatible gateway directly over HTTPS.
 
     We deliberately avoid shelling out to the `claude` CLI here. The Stop hook
@@ -340,7 +360,7 @@ def _call_messages_api(prompt: str) -> str:
         )
 
     payload = json.dumps({
-        "model": ANALYSIS_MODEL,
+        "model": model,
         "max_tokens": 4096,
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
@@ -414,32 +434,70 @@ def _parse_ai_instincts(output: str) -> list[dict]:
     return []
 
 
+# On a retry, append a firmer JSON-only nudge — the gateway-mapped model
+# sometimes wraps output in prose/fences that parse to nothing.
+FIRMER_SUFFIX = (
+    "\n\nIMPORTANT: respond with ONLY a raw JSON array (no markdown code fences, "
+    "no explanation). If you identified any patterns above, the array MUST be "
+    "non-empty."
+)
+
+
+def _log_ai_failure(err: Exception) -> None:
+    """Append an AI-analysis failure to ai-analysis-errors.log (best-effort).
+
+    Surfaces failures instead of silently returning [] — the original
+    implementation swallowed every error, which hid the nested-CLI deadlock as
+    a permanent "0 AI instincts".
+    """
+    try:
+        err_log = (
+            Path(__file__).resolve().parents[1]
+            / "data" / "observations" / "ai-analysis-errors.log"
+        )
+        err_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(err_log, "a", encoding="utf-8") as f:
+            ts = datetime.now(timezone.utc).isoformat()
+            f.write(f"{ts} AI analysis failed: {type(err).__name__}: {err}\n")
+    except Exception:
+        pass
+
+
 def run_ai_analysis(session_obs: list[dict]) -> list[dict]:
-    """Run AI semantic analysis via a direct gateway call (no nested CLI)."""
+    """Run AI semantic analysis via direct gateway calls (no nested CLI).
+
+    Resolves the model to match the session's, then makes up to two attempts:
+    a transient failure (529 overloaded, timeout) or an empty parse retries
+    once; a hard 4xx "model not found" switches to the reliable fallback model
+    before the retry. Logs only when both attempts are exhausted.
+    """
     if not session_obs:
         return []
 
-    prompt = build_ai_prompt(session_obs)
+    base_prompt = build_ai_prompt(session_obs)
+    model = resolve_analysis_model()
+    last_error: Exception | None = None
 
-    try:
-        output = _call_messages_api(prompt)
-        return _parse_ai_instincts(output)
-    except Exception as e:
-        # Surface the failure instead of silently returning []. The previous
-        # implementation ate every error, which is why "0 AI instincts" was
-        # invisible: the nested CLI was deadlocking, not producing nothing.
+    for attempt in range(2):
+        prompt = base_prompt if attempt == 0 else base_prompt + FIRMER_SUFFIX
         try:
-            err_log = (
-                Path(__file__).resolve().parents[1]
-                / "data" / "observations" / "ai-analysis-errors.log"
-            )
-            err_log.parent.mkdir(parents=True, exist_ok=True)
-            with open(err_log, "a", encoding="utf-8") as f:
-                ts = datetime.now(timezone.utc).isoformat()
-                f.write(f"{ts} AI analysis failed: {type(e).__name__}: {e}\n")
-        except Exception:
-            pass
-        return []
+            output = _call_messages_api(prompt, model)
+            instincts = _parse_ai_instincts(output)
+            if instincts:
+                return instincts
+            # Parsed empty -> retry (attempt 1 uses the firmer prompt).
+        except urllib.error.HTTPError as e:
+            last_error = e
+            # Hard rejection of the model id -> retry against the reliable fallback.
+            if e.code in (400, 404) and model != FALLBACK_MODEL:
+                model = FALLBACK_MODEL
+            # 5xx / overload / other transient -> retry the same model.
+        except Exception as e:
+            last_error = e
+
+    if last_error is not None:
+        _log_ai_failure(last_error)
+    return []
 
 
 # ---------- Instinct File Management ----------
