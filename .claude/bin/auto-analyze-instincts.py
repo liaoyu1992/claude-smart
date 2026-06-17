@@ -23,10 +23,15 @@ from pathlib import Path
 
 # ---------- Configuration ----------
 
-# Model id sent to the gateway. The configured gateway maps Anthropic model
-# ids onto its own backend (e.g. claude-haiku-* -> glm-4.5-air), so the haiku
-# id is accepted as-is and no separate GLM id is needed.
-ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
+# Model id sent to the gateway. Overridable via CLAUDE_SMART_ANALYSIS_MODEL so
+# the analysis model can be swapped without a code edit. The configured gateway
+# maps Anthropic model ids onto its own backend (e.g. claude-haiku-* ->
+# glm-4.5-air), so any Anthropic-format id works; prefer those over native
+# backend names. A malformed/unknown id is rejected by the gateway (HTTP 4xx)
+# and degrades gracefully — see ai-analysis-errors.log.
+ANALYSIS_MODEL = os.environ.get(
+    "CLAUDE_SMART_ANALYSIS_MODEL", "claude-haiku-4-5-20251001"
+)
 MAX_OBS_FOR_AI = 200  # Limit observations sent to AI for cost control
 
 
