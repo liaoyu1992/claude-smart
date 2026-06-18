@@ -48,9 +48,11 @@
 .claude/
 │
 ├── hooks/
-│   └── observe.sh                     ◀── Claude Code Hook 入口
-│       ├── → bin/observe.py           (记录工具调用到 JSONL)
-│       └── → bin/observations_rotate.py (数据轮转/归档)
+│   ├── observe.sh                     ◀── PreToolUse/PostToolUse Hook 入口
+│   │   ├── → bin/observe.py           (记录工具调用到 JSONL)
+│   │   └── → bin/observations_rotate.py (数据轮转/归档)
+│   └── stop.sh                        ◀── Stop Hook 入口（会话结束分析流水线）
+│       └── → 串联执行 4 个脚本（独立容错）
 │
 ├── bin/
 │   ├── observe.py                     ◀── 观测记录写入器 (176行)
@@ -227,7 +229,7 @@ personal/*.md                    auto-evolved.md
        │
        ↓ 按 domain 聚合
        │   workflow / coding / debugging / ...
-       │   每个域至少 2 条 Instinct 才输出
+       │   每个域至少 1 条 Instinct 即可输出
        │
        ↓ 生成 Markdown
          └── 写入 rules/auto-evolved.md (Claude Code 自动加载)
@@ -335,24 +337,25 @@ class MemoryVectorStore:
        │              │               │                  │
        ↓              ↓               │                  ↓
   ┌────────────────────────┐          │    ┌──────────────────────────┐
-  │    observe.sh          │          │    │  Stop Hook 串联执行:     │
-  │  ├── observe.py ───────┼──→ JSONL │    │                          │
-  │  └── rotate.py         │          │    │  ① auto-analyze-instincts│
-  └────────────────────────┘          │    │     reads → JSONL        │
-                                      │    │     writes → personal/   │
-                                      │    │     calls → Claude Haiku │
-                                      │    │                          │
-                                      │    │  ② auto-evolve           │
-                                      │    │     reads → personal/    │
-                                      │    │     writes → auto-evolved│
-                                      │    │                          │
-                                      │    │  ③ extract_memory        │
-                                      │    │     reads → JSONL        │
-                                      │    │     writes → memory/raw/ │
-                                      │    │     calls → Claude Haiku │
-                                      │    └────────────┬─────────────┘
-                                      │                 │
-                                      ↓                 │
+  │    observe.sh          │          │    │  stop.sh (wrapper)       │
+  │  ├── observe.py ───────┼──→ JSONL │    │  ┌────────────────────┐  │
+  │  └── rotate.py         │          │    │  │ 4 脚本独立容错执行  │  │
+  └────────────────────────┘          │    │  └────────┬───────────┘  │
+                                      │    │           │              │
+                                      │    │           ↓              │
+                                      │    │  ┌────────────────┐      │
+                                      │    │  │ ① analyze      │      │
+                                      │    │  │   instincts    │      │
+                                      │    │  ├────────────────┤      │
+                                      │    │  │ ② evolve       │      │
+                                      │    │  ├────────────────┤      │
+                                      │    │  │ ③ extract      │      │
+                                      │    │  ├────────────────┤      │
+                                      │    │  │ ④ promote      │      │
+                                      │    │  └────────┬───────┘      │
+                                      │    └───────────┼──────────────┘
+                                      │                │
+                                      ↓                │
                               ┌───────────────────┐     │
                               │ inject_memory_    │     │
                               │ context.py        │     │
@@ -379,20 +382,22 @@ class MemoryVectorStore:
 2.  PreToolUse Hook → observe.sh → observe.py → JSONL        ↓
 3.  工具执行                                                 ↓
 4.  PostToolUse Hook → observe.sh → observe.py → JSONL       ↓
-5.  会话结束，Stop Hook 触发                                  ↓
-6.  auto-analyze-instincts.py (左分支: 行为模式)
-    ├── 路径 A: 统计模式检测 (5 种硬编码模式)
-    └── 路径 B: Claude Haiku AI 语义分析                      ↓
-7.  写入/更新 personal/*.md (Instinct 规则)                   ↓
-8.  auto-evolve.py (聚合器)
-    ├── 过滤 confidence >= 0.7
-    ├── Jaccard 语义去重 (Union-Find, 阈值 0.5)
-    ├── 按 domain 聚合 (每域至少2条)
-    └── 写入 rules/auto-evolved.md                           ↓
-9.  extract_memory.py (右分支: 知识提取, 与 6-8 并行)
-    ├── 统计提取: 高频目录 → 项目上下文
-    ├── AI 提取: Claude Haiku → bug方案/技术决策
-    └── 写入 memory/raw/*.md                                 ↓
+5.  会话结束，Stop Hook 触发                                 ↓
+6.  stop.sh wrapper 串联执行 4 个脚本（独立容错）              ↓
+    ├── auto-analyze-instincts.py (左分支: 行为模式)
+    │   ├── 路径 A: 统计模式检测 (5 种硬编码模式)
+    │   └── 路径 B: Claude Haiku AI 语义分析                  ↓
+    ├── 写入/更新 personal/*.md (Instinct 规则)               ↓
+    ├── auto-evolve.py (聚合器)
+    │   ├── 过滤 confidence >= 0.7
+    │   ├── Jaccard 语义去重 (Union-Find, 阈值 0.5)
+    │   ├── 按 domain 聚合 (每域至少1条)
+    │   └── 写入 rules/auto-evolved.md                       ↓
+    ├── extract_memory.py (右分支: 知识提取, 并行)
+    │   ├── 统计提取: 高频目录 → 项目上下文
+    │   ├── AI 提取: Claude Haiku → bug方案/技术决策
+    │   └── 写入 memory/raw/*.md                             ↓
+    └── promote-to-team.py (团队候选生成)                     ↓
 10. 下次会话启动时
     ├── Claude Code 自动加载 rules/*.md
     └── SessionStart Hook → inject_memory_context.py
@@ -465,7 +470,7 @@ python3 -c "import qdrant_client, numpy; print('Dependencies OK')"
 | `PreToolUse(Bash)` | Bash 命令执行前 | 记录执行意图 |
 | `PostToolUse(.*)` | 所有工具调用后 | 记录工具调用详情 |
 | `SessionStart` | 会话启动时 | 向量检索 Top-5 记忆注入 |
-| `Stop` | 会话结束时 | 分析观测 → 提炼 Instinct → 聚合规则 → 生成团队提炼候选 |
+| `Stop` | 会话结束时 | 通过 stop.sh wrapper 串联执行 4 个脚本（容错设计） |
 
 ---
 
@@ -498,6 +503,35 @@ metadata:
 | 首次发现 | confidence = 0.5 |
 | 重复验证 | confidence += 0.05 (上限 0.9) |
 | 长期未触发 | confidence -= 0.05 (低于 0.55 标记 deprecated, 下限 0.1) |
+
+---
+
+## 最近改进
+
+### 2026-06: Stop Hook 容错设计
+
+**问题**: 原先在 `settings.local.json` 中用 `&&` 串联 4 个脚本，任一脚本失败（如 AI 分析超时、网络抖动）会中断整个学习流水线，导致一整个会话的观察数据白费。
+
+**解决**: 新增 `stop.sh` wrapper，每个脚本独立执行且带容错（`|| true`）：
+- 单脚本失败不影响其他脚本执行
+- 保持学习流水线的完整性和可靠性
+- 详见 `.claude/hooks/stop.sh`
+
+### 2026-06: 域过滤阈值优化
+
+**问题**: auto-evolve.py 要求 "每个域至少 2 条 Instinct 才输出"，导致孤立但高置信度的规则（如唯一的 read-before-edit instinct）被静默丢弃，auto-evolved.md 内容稀缺。
+
+**解决**: 放宽阈值为 "至少 1 条"，保留所有高置信度的单条规则，丰富自动生成的规则集。
+
+### 2026-06: 内存管道修复
+
+**问题**: 
+- 注入系统因缺少崩溃恢复标记，分析失败后无法恢复
+- AI 分析脚本逻辑缺陷导致实际产出远低于设计
+
+**解决**: 
+- 在 `inject_memory_context.py` 中添加 `_maybe_recover_analysis` 崩溃恢复机制
+- 修复 `auto-analyze-instincts.py` 的分析逻辑，提高 AI 分析效果
 
 ---
 
