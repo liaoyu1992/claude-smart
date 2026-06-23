@@ -6,7 +6,7 @@
 #
 # IMPORTANT: All paths are relative to the project root where .claude/ lives.
 
-set -euo pipefail
+set -eo pipefail
 
 PHASE="${1:-post}"
 
@@ -26,9 +26,10 @@ if [ -z "$INPUT" ]; then
 fi
 
 # Delegate to Python script, passing phase and input
-echo "$INPUT" | python3 "$OBSERVE_PY" "$PHASE" "$CLAUDE_DIR" 2>/dev/null || true
+# Use subshell to ensure || true works correctly in pipefail mode
+(echo "$INPUT" | python3 "$OBSERVE_PY" "$PHASE" "$CLAUDE_DIR" 2>/dev/null || true) || true
 
 # Also run rotation check (silently)
-python3 "$CLAUDE_DIR/bin/observations_rotate.py" "$CLAUDE_DIR" 2>/dev/null || true
+(python3 "$CLAUDE_DIR/bin/observations_rotate.py" "$CLAUDE_DIR" 2>/dev/null || true) || true
 
 exit 0
