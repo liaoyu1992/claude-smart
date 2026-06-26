@@ -25,6 +25,14 @@ else
   PYTHON3="/c/Users/liaoyu/AppData/Local/Python/bin/python3.exe"
 fi
 
+# Step 0 (cluade-smart canonical only): fan team instincts to enrolled projects
+# so each project's local team/ stays current. Targets consume their local
+# (synced) team/ via inject_memory_context.py below. || true keeps a sync
+# failure from blocking injection.
+if [ -f "$CLAUDE_DIR/bin/sync-team.py" ]; then
+  "$PYTHON3" "$CLAUDE_DIR/bin/sync-team.py" --quiet 2>/dev/null || true
+fi
+
 "$PYTHON3" "$CLAUDE_DIR/memory/inject_memory_context.py" "$CLAUDE_DIR" 2>/dev/null || true
 
 exit 0
