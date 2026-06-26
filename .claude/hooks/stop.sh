@@ -22,7 +22,9 @@ python3 "$CLAUDE_DIR/bin/auto-analyze-instincts.py" "$CLAUDE_DIR" 2>/dev/null ||
 python3 "$CLAUDE_DIR/bin/auto-evolve.py" "$CLAUDE_DIR" 2>/dev/null || true
 # 3. Extract knowledge memories -> memory/raw/
 python3 "$CLAUDE_DIR/bin/extract_memory.py" "$CLAUDE_DIR" 2>/dev/null || true
-# 4. Promote high-confidence instincts -> team review candidates (gitignored)
+# 4. Consolidate instincts -> GC deprecated backlog, merge near-dups, prune noise
+python3 "$CLAUDE_DIR/bin/consolidate_instincts.py" "$CLAUDE_DIR" 2>/dev/null || true
+# 5. Promote high-confidence instincts -> team review candidates (gitignored)
 python3 "$CLAUDE_DIR/bin/promote-to-team.py" "$CLAUDE_DIR" 2>/dev/null || true
 
 exit 0
