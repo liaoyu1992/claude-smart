@@ -783,7 +783,10 @@ def apply_confidence_decay(instincts_dir: Path):
             # Decay
             confidence = existing.get("confidence", 0.5)
             new_confidence = max(0.1, confidence - 0.05)
-            deprecated = new_confidence < 0.55
+            # Compare on the rounded value: 0.6-0.05 is 0.5499999999999999 in
+            # IEEE754, so a raw `< 0.55` false-positives at exactly the 0.55
+            # boundary and wrongly deprecates an instinct that should survive.
+            deprecated = round(new_confidence, 2) < 0.55
 
             # Rewrite with updated confidence
             content = md_file.read_text(encoding="utf-8")
